@@ -1,0 +1,30 @@
+# Exemple de configuration Vehicle Connectivity SDK (section 30).
+# Aucune valeur n'est codee en dur dans le code -- tout passe par ce fichier.
+
+connector:
+  type: tcp          # virtual | tcp | serial | bluetooth | socketcan
+  host: 127.0.0.1
+  port: 35000
+  # device_path: /dev/ttyUSB0     # utilise si type = serial
+  # mac_address: AA:BB:CC:DD:EE:FF # utilise si type = bluetooth
+  # interface: vcan0               # utilise si type = socketcan
+
+timeouts:
+  connect: 5   # secondes
+  read: 2
+  command: 2
+
+retry:
+  enabled: true
+  max_attempts: 3
+  strategy: exponential   # fixed | exponential
+
+security:
+  mode: read_only   # read_only | full -- read_only par defaut, ne pas changer sans raison documentee
+
+logging:
+  level: INFO   # DEBUG | INFO | WARNING | ERROR | CRITICAL
+
+rate_limit:
+  max_commands_per_second: 20
+  max_queue_size: 1000
