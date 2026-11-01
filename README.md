@@ -1,101 +1,214 @@
-# Vehicle Connectivity SDK — Développeur 1
+# Vehicle Connectivity SDK
 
-Implémentation C++ de la spécification fonctionnelle et technique
-« Vehicle Connectivity SDK ». Ce document résume l'état final du MVP.
+A C++ SDK that gives applications a single, uniform way to talk to a vehicle, whatever the physical link (TCP, serial, Bluetooth, SocketCAN) or a simulator. It handles connections, sessions, timeouts, reconnection, error normalization, logging and metrics, and it deliberately does **not** decode vehicle data: responses are returned as raw messages for the application layer to interpret.
 
-## Compiler et lancer les tests
+It was developed as the connectivity layer of an automotive diagnostic platform (MVP), within a 4-developer team at Amsys Consulting.
+
+## Features
+
+- **Connector abstraction:** every transport implements the `IConnector` contract. Adding a new connector does not require touching the Core.
+- **5 connectors:** Virtual, TCP, Serial, Bluetooth, SocketCAN (see [Status](#status-and-known-limitations) for what is validated).
+- **Vehicle sessions:** `VehicleSession` manages the lifecycle (start, send, stop) and per-session statistics.
+- **Raw responses:** replies come back as `RawVehicleMessage`, with no business decoding.
+- **Resilience:** configurable timeouts per connector, connection-loss detection, automatic reconnection (tested with real connection cuts).
+- **Normalized errors:** all failures derive from `ConnectorError` with a stable error code catalogue (`TIMEOUT`, `CONNECTION_LOST`, ...).
+- **Safe by default:** a read-only security mode blocks potentially destructive commands unless explicitly disabled.
+- **Observability:** structured JSON logs (`StructuredLogger`) and metrics (`Metrics`).
+- **Configuration-driven:** switch connector by editing a YAML file, without recompiling.
+- **Interface discovery:** TCP, Serial and SocketCAN.
+
+## Architecture
+
+```
+vehicle-connectivity-sdk/
+  include/vcsdk/
+    core/            Contracts (IConnector, RawVehicleMessage, VehicleSession, ...)
+    connectors/      Virtual, Tcp, Serial, Bluetooth, SocketCan
+    net/             Low-level clients (TCP, serial port)
+    retry/           RetryPolicy, ReconnectHelper
+    security/        CommandSecurityPolicy (READ_ONLY mode)
+    monitoring/      Metrics, RateLimiter
+    buffer/          LocalBuffer
+    logging/         StructuredLogger
+    configuration/   Config (YAML)
+    factory/         ConnectorFactory
+  src/               Implementations
+  tests/
+    unit/            Isolated, fast suites
+    contract/        Contract scenarios shared by all connectors
+    fixtures/        ELM327 simulators (TCP + serial), outside the SDK scope
+  examples/          End-to-end demonstrator
+  docs/              Guides and diagrams
+  config.example.yaml
+  CMakeLists.txt
+```
+
+Component, class, sequence and state-machine diagrams are in [`docs/diagrammes/`](docs/diagrammes/).
+
+## Getting started
+
+### Requirements
+
+- Linux (the SDK uses POSIX sockets, serial ports, SocketCAN and BlueZ)
+- CMake 3.16 or newer
+- A C++20-capable compiler (GCC 10+ or Clang 10+)
+- Libraries: [yaml-cpp](https://github.com/jbeder/yaml-cpp), BlueZ (`libbluetooth`), [GoogleTest](https://github.com/google/googletest), pthreads
+- Python 3 (only to run the ELM327 emulator used by the tests and the demo)
+
+On Debian/Ubuntu:
+
+```bash
+sudo apt install build-essential cmake libyaml-cpp-dev libbluetooth-dev libgtest-dev python3
+```
+
+### Build
 
 ```bash
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Debug
 make
-cd .. && ./tests/run_tests.sh   # lance les simulateurs puis ctest
 ```
 
-## Lancer le démonstrateur
+### Run the tests
+
+```bash
+./tests/run_tests.sh   # starts the simulators, then runs ctest
+```
+
+### Run the demo
 
 ```bash
 python3 tests/fixtures/elm327_emulator.py 35000 &
 ./build/demo_virtual_connector
 ```
 
-## État des 15 critères d'acceptation (section 33)
+## Usage
 
-| # | Critère | Statut |
-|---|---|---|
-| 1 | Au moins deux types de connecteurs fonctionnent | Fait -- Virtual, TCP, Serial (3 valides) |
-| 2 | Le Virtual Connector fonctionne avec un simulateur | Fait |
-| 3 | La decouverte des interfaces fonctionne | Fait (TCP, Serial, SocketCAN) |
-| 4 | Une session vehicule peut etre creee | Fait -- VehicleSession |
-| 5 | Les commandes peuvent etre envoyees | Fait |
-| 6 | Les reponses sont recues sans decodage metier | Fait -- RawVehicleMessage |
-| 7 | Les timeouts sont geres | Fait -- configurable par connecteur |
-| 8 | La perte de connexion est detectee | Fait |
-| 9 | La reconnexion automatique fonctionne | Fait -- testee avec coupure reelle |
-| 10 | Les erreurs sont normalisees | Fait -- ConnectorError + catalogue section 16 |
-| 11 | Les metriques sont disponibles | Fait -- Metrics |
-| 12 | Les logs sont structures | Fait -- JSON, StructuredLogger |
-| 13 | Le mode lecture seule est actif par defaut | Fait -- teste explicitement |
-| 14 | Les tests automatises passent | Fait -- 13 suites, 100% |
-| 15 | Un nouveau connecteur peut etre ajoute sans modifier le Core | Fait -- prouve par les 5 connecteurs existants |
+### Minimal example
 
-## Limitations honnetes (a revalider hors sandbox de developpement)
+```cpp
+#include "vcsdk/connectors/virtual/VirtualConnector.hpp"
+#include "vcsdk/core/VehicleSession.hpp"
 
-- Bluetooth : compile correctement, mais AF_BLUETOOTH est indisponible
-  dans cet environnement -- aucun test fonctionnel possible ici. A
-  valider avec un vrai adaptateur.
-- SocketCAN : compile et se comporte correctement en l'absence
-  d'interface (discover(), erreurs de connexion), mais le module noyau
-  vcan n'est pas disponible ici -- l'echange de trames reel n'a pas pu
-  etre teste. A valider avec vcan0 ou un vrai bus CAN.
-- Discovery Bluetooth (inquiry BlueZ) : non implemente, faute de
-  materiel pour valider le resultat -- laisse en TODO explicite dans
-  le code.
+using namespace vcsdk::core;
+using namespace vcsdk::connectors;
 
-## Livrables (section 32)
+auto connector = std::make_shared<VirtualConnector>("127.0.0.1", 35000);
+VehicleSession session("SESSION-001", connector, "VIRTUAL");
 
-- Code : SDK complet + 5 connecteurs (include/vcsdk/, src/)
-- Architecture : diagramme de composants, diagramme de classes,
-  **diagramme de sequence**, machine d'etat (voir docs/diagrammes/)
-- Contrats : IConnector, RawVehicleMessage, VehicleSession,
-  ConnectorEvent, ConnectorError
-- Tests : unitaires (8 suites), contractuels (5 suites),
-  **integration (1 suite dediee)**, **performance (1 suite, section 26)**,
-  reconnexion (couverte dans les tests contractuels)
-- Documentation : ce fichier + **docs/creer-un-connecteur.md** +
-  **docs/utilisation-du-sdk.md** + commentaires exhaustifs dans le code
-- Demonstrateur : examples/demo_virtual_connector.cpp
+session.start();
 
-**15 suites de tests, 100% passantes.**
+Command cmd;
+cmd.commandId = "CMD-1";
+cmd.payload = "010C";  // engine RPM (OBD-II PID)
+RawVehicleMessage msg = session.send(cmd);
 
-## Structure du projet
+std::cout << msg.rawPayload << std::endl;  // "410C1AF8"
 
-```
-vehicle-connectivity-sdk/
-  include/vcsdk/
-    core/            Contrats (IConnector, RawVehicleMessage, VehicleSession...)
-    connectors/      Virtual, Tcp, Serial, Bluetooth, SocketCan
-    net/             Clients bas niveau (TCP, port serie)
-    retry/           RetryPolicy, ReconnectHelper
-    security/        CommandSecurityPolicy (mode READ_ONLY)
-    monitoring/      Metrics, RateLimiter
-    buffer/          LocalBuffer
-    logging/         StructuredLogger
-    configuration/   Config (YAML)
-    factory/         ConnectorFactory
-  src/               Implementations (.cpp)
-  tests/
-    unit/            13 suites, isolees, rapides
-    contract/        Scenarios section 25
-    fixtures/        Simulateurs ELM327 (TCP + serie), hors perimetre SDK
-  examples/          Demonstrateur end-to-end
-  config.example.yaml  Exemple de configuration complete
-  CMakeLists.txt
+session.stop();
 ```
 
-## Prochaines etapes (post-MVP)
+### Recommended: configuration + factory
 
-- Discovery Bluetooth reelle (inquiry BlueZ)
-- Validation SocketCAN sur machine avec vcan ou bus reel
-- Validation Bluetooth sur machine avec adaptateur reel
-- Tests de performance (section 26 : 1/10/50/100 messages par seconde)
+```cpp
+#include "vcsdk/configuration/Config.hpp"
+#include "vcsdk/factory/ConnectorFactory.hpp"
+#include "vcsdk/core/VehicleSession.hpp"
+
+using namespace vcsdk;
+
+auto config = configuration::loadFromYamlFile("config.yaml");
+auto connector = factory::ConnectorFactory::create(config);
+
+core::VehicleSession session("SESSION-001", connector, config.connectorType);
+session.start();
+// ...
+session.stop();
+```
+
+This lets you switch between Virtual, TCP, Serial, Bluetooth and SocketCAN by editing `config.yaml` only. See [`config.example.yaml`](config.example.yaml) for a complete example.
+
+### Error handling
+
+All SDK errors derive from `ConnectorError`:
+
+```cpp
+try {
+    session.send(cmd);
+} catch (const core::ConnectorError& e) {
+    std::cerr << "Error [" << e.code() << "]: " << e.message() << std::endl;
+    // e.code() is e.g. ErrorCode::TIMEOUT, ErrorCode::CONNECTION_LOST, ...
+}
+```
+
+### Metrics
+
+```cpp
+const auto& stats = session.getStatistics();
+std::cout << "Commands sent:     " << stats.commandsSent << std::endl;
+std::cout << "Responses received: " << stats.messagesReceived << std::endl;
+```
+
+Connector-level metrics are available when the connector exposes them (e.g. `VirtualConnector`):
+
+```cpp
+auto virtualConn = std::dynamic_pointer_cast<VirtualConnector>(connector);
+if (virtualConn) {
+    std::cout << virtualConn->getMetrics().report();
+}
+```
+
+### Security mode
+
+By default the SDK runs in **read-only** mode and blocks potentially destructive commands. To allow them explicitly (e.g. in a controlled test environment):
+
+```cpp
+virtualConn->setSecurityMode(vcsdk::security::SdkMode::FULL);
+```
+
+> **Warning:** never enable `FULL` mode in production without explicit prior validation.
+
+### Writing a new connector
+
+See [`docs/creer-un-connecteur.md`](docs/creer-un-connecteur.md).
+
+## Testing
+
+15 automated test suites (GoogleTest, run through CTest), all passing:
+
+- 5 contract suites, one per connector (Virtual, TCP, Serial, SocketCAN, Bluetooth)
+- 8 unit suites (retry policy, reconnect helper, command security policy, local buffer, rate limiter, metrics, structured logger, config and factory)
+- 1 integration suite
+- 1 performance suite
+
+TCP and serial tests run against the bundled ELM327 simulators.
+
+## Status and known limitations
+
+| Connector | Status |
+|---|---|
+| Virtual | Validated against the ELM327 simulator |
+| TCP | Validated against the ELM327 simulator |
+| Serial | Validated against the ELM327 simulator |
+| SocketCAN | Compiles and behaves correctly without an interface (discovery, connection errors); real frame exchange **not yet tested** (needs `vcan0` or a real CAN bus) |
+| Bluetooth | Compiles; **no functional test yet** (needs a real adapter) |
+
+Other known limitations:
+
+- Bluetooth discovery (BlueZ inquiry) is not implemented; it is left as an explicit TODO in the code.
+
+## Roadmap
+
+- Real Bluetooth discovery (BlueZ inquiry)
+- SocketCAN validation on a machine with `vcan` or a real bus
+- Bluetooth validation with a real adapter
+
+## Author
+
+Developed by **Aymen Touaiti** ([LinkedIn](https://www.linkedin.com/in/aymen-touaiti/)) as part of an internship at Amsys Consulting.
+
+## License
+
+Copyright (c) 2026 Aymen Touaiti. All rights reserved.
+
+This code is published for portfolio and evaluation purposes. No permission is granted to use, copy, modify or distribute it without prior written authorization.
